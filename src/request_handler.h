@@ -278,8 +278,8 @@ boolean formValidator() {
 
 // Config was saved
 void onConfigSaved() {
-	DBG_PRINTLN(F("Configuration was updated."));
-	ws2812fx.setLength(atoi(paramNumLedsValue));
+		DBG_PRINTLN(F("Configuration was updated."));
+		// ws2812fx.setLength(atoi(paramNumLedsValue)); // Removed: no LED control
 }
 
 // Requests to /startDevicelogin

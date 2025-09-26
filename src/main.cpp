@@ -16,7 +16,15 @@
 #include <HTTPClient.h>
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
-#include <WS2812FX.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+// OLED display settings
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 32
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
 #include <EEPROM.h>
 #include "FS.h"
 #include "SPIFFS.h"
@@ -110,9 +118,7 @@ byte lastIotWebConfState;
 // HTTP client
 WiFiClientSecure client;
 
-// WS2812FX
-WS2812FX ws2812fx = WS2812FX(NUMLEDS, DATAPIN, NEO_GRB + NEO_KHZ800);
-int numberLeds;
+// OLED display will be initialized later
 
 // OTA update
 HTTPUpdateServer httpUpdater;
@@ -253,55 +259,15 @@ void startMDNS() {
 #include "spiffs_webserver.h"
 
 
-// Neopixel control
-void setAnimation(uint8_t segment, uint8_t mode = FX_MODE_STATIC, uint32_t color = RED, uint16_t speed = 3000, bool reverse = false) {
-	uint16_t startLed, endLed = 0;
 
-	// Support only one segment for the moment
-	if (segment == 0) {
-		startLed = 0;
-		endLed = numberLeds;
-	}
-	Serial.printf("setAnimation: %d, %d-%d, Mode: %d, Color: %d, Speed: %d\n", segment, startLed, endLed, mode, color, speed);
-	ws2812fx.setSegment(segment, startLed, endLed, mode, color, speed, reverse);
-}
-
-void setPresenceAnimation() {
-	// Activity: Available, Away, BeRightBack, Busy, DoNotDisturb, InACall, InAConferenceCall, Inactive, InAMeeting, Offline, OffWork, OutOfOffice, PresenceUnknown, Presenting, UrgentInterruptionsOnly
-
-	if (activity.equals("Available")) {
-		setAnimation(0, FX_MODE_STATIC, GREEN);
-	}
-	if (activity.equals("Away")) {
-		setAnimation(0, FX_MODE_STATIC, YELLOW);
-	}
-	if (activity.equals("BeRightBack")) {
-		setAnimation(0, FX_MODE_STATIC, ORANGE);
-	}
-	if (activity.equals("Busy")) {
-		setAnimation(0, FX_MODE_STATIC, PURPLE);
-	}
-	if (activity.equals("DoNotDisturb") || activity.equals("UrgentInterruptionsOnly")) {
-		setAnimation(0, FX_MODE_STATIC, PINK);
-	}
-	if (activity.equals("InACall")) {
-		setAnimation(0, FX_MODE_BREATH, RED);
-	}
-	if (activity.equals("InAConferenceCall")) {
-		setAnimation(0, FX_MODE_BREATH, RED, 9000);
-	}
-	if (activity.equals("Inactive")) {
-		setAnimation(0, FX_MODE_BREATH, WHITE);
-	}
-	if (activity.equals("InAMeeting")) {
-		setAnimation(0, FX_MODE_SCAN, RED);
-	}	
-	if (activity.equals("Offline") || activity.equals("OffWork") || activity.equals("OutOfOffice") || activity.equals("PresenceUnknown")) {
-		setAnimation(0, FX_MODE_STATIC, BLACK);
-	}
-	if (activity.equals("Presenting")) {
-		setAnimation(0, FX_MODE_COLOR_WIPE, RED);
-	}
+// Update OLED display with Teams presence/activity
+void setPresenceDisplay() {
+	display.clearDisplay();
+	display.setTextSize(2);
+	display.setTextColor(SSD1306_WHITE);
+	display.setCursor(0, 0);
+	display.print(activity.c_str());
+	display.display();
 }
 
 
@@ -380,7 +346,7 @@ void pollPresence() {
 		activity = responseDoc["activity"].as<String>();
 		retries = 0;
 
-		setPresenceAnimation();
+		setPresenceDisplay();
 	}
 }
 
@@ -426,13 +392,11 @@ boolean refreshToken() {
 
 // Implementation of a statemachine to handle the different application states
 void statemachine() {
-
 	// Statemachine: Check states of iotWebConf to detect AP mode and WiFi Connection attepmt
 	byte iotWebConfState = iotWebConf.getState();
 	if (iotWebConfState != lastIotWebConfState) {
 		if (iotWebConfState == IOTWEBCONF_STATE_NOT_CONFIGURED || iotWebConfState == IOTWEBCONF_STATE_AP_MODE) {
 			DBG_PRINTLN(F("Detected AP mode"));
-			setAnimation(0, FX_MODE_THEATER_CHASE, WHITE);
 		}
 		if (iotWebConfState == IOTWEBCONF_STATE_CONNECTING) {
 			DBG_PRINTLN(F("WiFi connecting"));
@@ -443,23 +407,20 @@ void statemachine() {
 
 	// Statemachine: Wifi connection start
 	if (state == SMODEWIFICONNECTING && laststate != SMODEWIFICONNECTING) {
-		setAnimation(0, FX_MODE_THEATER_CHASE, BLUE);
+		// Could update OLED here
 	}
 
 	// Statemachine: After wifi is connected
-	if (state == SMODEWIFICONNECTED && laststate != SMODEWIFICONNECTED)
-	{
-		setAnimation(0, FX_MODE_THEATER_CHASE, GREEN);
+	if (state == SMODEWIFICONNECTED && laststate != SMODEWIFICONNECTED) {
 		startMDNS();
 		loadContext();
-		// WiFi client
 		DBG_PRINTLN(F("Wifi connected, waiting for requests ..."));
 	}
 
 	// Statemachine: Devicelogin started
 	if (state == SMODEDEVICELOGINSTARTED) {
 		if (laststate != SMODEDEVICELOGINSTARTED) {
-			setAnimation(0, FX_MODE_THEATER_CHASE, PURPLE);
+			// Could update OLED here
 		}
 		if (millis() >= tsPolling) {
 			pollForToken();
@@ -470,7 +431,7 @@ void statemachine() {
 	// Statemachine: Devicelogin failed
 	if (state == SMODEDEVICELOGINFAILED) {
 		DBG_PRINTLN(F("Device login failed"));
-		state = SMODEWIFICONNECTED;	// Return back to initial mode
+		state = SMODEWIFICONNECTED; // Return back to initial mode
 	}
 
 	// Statemachine: Auth is ready, start polling for presence immediately
@@ -497,9 +458,6 @@ void statemachine() {
 
 	// Statemachine: Refresh token
 	if (state == SMODEREFRESHTOKEN) {
-		if (laststate != SMODEREFRESHTOKEN) {
-			setAnimation(0, FX_MODE_THEATER_CHASE, RED);
-		}
 		if (millis() >= tsPolling) {
 			boolean success = refreshToken();
 			if (success) {
@@ -513,10 +471,8 @@ void statemachine() {
 		if (laststate != SMODEPRESENCEREQUESTERROR) {
 			retries = 0;
 		}
-		
 		Serial.printf("Polling presence failed, retry #%d.\n", retries);
 		if (retries >= 5) {
-			// Try token refresh
 			state = SMODEREFRESHTOKEN;
 		} else {
 			state = SMODEPOLLPRESENCE;
@@ -531,23 +487,7 @@ void statemachine() {
 }
 
 
-/**
- * Multicore
- */
-void neopixelTask(void * parameter) {
-	for (;;) {
-		ws2812fx.service();
-		vTaskDelay(10);
-	}
-}
 
-void customShow(void) {
-	uint8_t *pixels = ws2812fx.getPixels();
-	// numBytes is one more then the size of the ws2812fx's *pixels array.
-	// the extra byte is used by the driver to insert the LED reset pulse at the end.
-	uint16_t numBytes = ws2812fx.getNumBytes() + 1;
-	rmt_write_sample(RMT_CHANNEL_0, pixels, numBytes, false); // channel 0
-}
 
 
 /**
@@ -555,19 +495,31 @@ void customShow(void) {
  */
 void setup()
 {
+	// OLED display init
+	if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C for 128x32
+		Serial.println(F("SSD1306 allocation failed"));
+		for(;;);
+	}
+		display.clearDisplay();
+		display.setTextSize(1);
+		display.setTextColor(SSD1306_WHITE);
+		display.setCursor(0,0);
+		display.println("ESPTeamsPresence");
+		display.setCursor(0,12);
+		display.println("WiFi Setup:");
+		display.setCursor(0,22);
+		display.print("Connect to: ");
+		display.println(thingName);
+		display.setCursor(0,32);
+		display.print("Pass: ");
+		display.println(wifiInitialApPassword);
+		display.display();
 	Serial.begin(115200);
 	DBG_PRINTLN();
 	DBG_PRINTLN(F("setup() Starting up..."));
-	// Serial.setDebugOutput(true);
 	#ifdef DISABLECERTCHECK
 		DBG_PRINTLN(F("WARNING: Checking of HTTPS certificates disabled."));
 	#endif
-
-	// WS2812FX
-	ws2812fx.init();
-	rmt_tx_int(RMT_CHANNEL_0, ws2812fx.getPin());
-	ws2812fx.start();
-	setAnimation(0, FX_MODE_STATIC, WHITE);
 
 	// iotWebConf - Initializing the configuration.
 	#ifdef LED_BUILTIN
@@ -579,23 +531,11 @@ void setup()
 	iotWebConf.addParameter(&paramTenant);
 	iotWebConf.addParameter(&paramPollInterval);
 	iotWebConf.addParameter(&paramNumLeds);
-	// iotWebConf.setFormValidator(&formValidator);
-	// iotWebConf.getApTimeoutParameter()->visible = true;
-	// iotWebConf.getApTimeoutParameter()->defaultValue = "10";
 	iotWebConf.setWifiConnectionCallback(&onWifiConnected);
 	iotWebConf.setConfigSavedCallback(&onConfigSaved);
 	iotWebConf.setupUpdateServer(&httpUpdater);
 	iotWebConf.skipApStartup();
 	iotWebConf.init();
-
-	// WS2812FX
-	numberLeds = atoi(paramNumLedsValue);
-	if (numberLeds < 1) {
-		DBG_PRINTLN(F("Number of LEDs not given, using 16."));
-		numberLeds = NUMLEDS;
-	}
-	ws2812fx.setLength(numberLeds);
-	ws2812fx.setCustomShow(customShow);
 
 	// HTTP server - Set up required URL handlers on the web server.
 	server.on("/", HTTP_GET, handleRoot);
@@ -611,7 +551,6 @@ void setup()
 		server.send(200, "text/plain", "");
 	}, handleFileUpload);
 
-	// server.onNotFound([](){ iotWebConf.handleNotFound(); });
 	server.onNotFound([]() {
 		iotWebConf.handleNotFound();
 		if (!handleFileRead(server.uri())) {
@@ -625,18 +564,8 @@ void setup()
 	DBG_PRINTLN(F("SPIFFS.begin() "));
 	if(!SPIFFS.begin(true)) {
 		DBG_PRINTLN("SPIFFS Mount Failed");
-        return;
-    }
-
-	// Pin neopixel logic to core 0
-	xTaskCreatePinnedToCore(
-		neopixelTask,
-		"Neopixels",
-		1000,
-		NULL,
-		1,
-		&TaskNeopixel,
-		0);
+		return;
+	}
 }
 
 void loop()

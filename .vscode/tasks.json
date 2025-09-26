@@ -1,0 +1,33 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build with OLED changes",
+			"type": "shell",
+			"command": "C:\\Users\\Wojtaszko\\.platformio\\penv\\Scripts\\platformio.exe run",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Build after installing IotWebConf",
+			"type": "shell",
+			"command": "C:\\Users\\Wojtaszko\\.platformio\\penv\\Scripts\\platformio.exe run",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Build after installing ArduinoJson",
+			"type": "shell",
+			"command": "C:\\Users\\Wojtaszko\\.platformio\\penv\\Scripts\\platformio.exe run",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Build after removing ws2812fx reference",
+			"type": "shell",
+			"command": "C:\\Users\\Wojtaszko\\.platformio\\penv\\Scripts\\platformio.exe run",
+			"isBackground": false,
+			"group": "build"
+		}
+	]
+}

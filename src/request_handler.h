@@ -23,6 +23,9 @@ boolean requestJsonApi(JsonDocument& doc, String url, String payload = "", size_
 	} else {
 		client->setCACert(rootCACertificateLogin);
 	}
+	#else
+	// For ESP32-C3 or when certificates are disabled, use insecure mode
+	client->setInsecure();
 	#endif
 
 	// HTTPClient
@@ -32,11 +35,13 @@ boolean requestJsonApi(JsonDocument& doc, String url, String payload = "", size_
 	const int emptyCapacity = JSON_OBJECT_SIZE(1);
 	DynamicJsonDocument emptyDoc(emptyCapacity);
 
-	// DBG_PRINT("[HTTPS] begin...\n");
+	Serial.printf("[HTTPS] Connecting to: %s\n", url.c_str());
     if (https.begin(*client, url)) {  // HTTPS
-		https.setConnectTimeout(10000);
-		https.setTimeout(10000);
+		https.setConnectTimeout(15000);  // Increased timeout for ESP32-C3
+		https.setTimeout(15000);         // Increased timeout for ESP32-C3
 		https.useHTTP10(true);
+		https.addHeader("Content-Type", "application/x-www-form-urlencoded");
+		https.addHeader("User-Agent", "ESPTeamsPresence/1.0");
 
 		// Send auth header?
 		if (sendAuth) {
@@ -48,6 +53,7 @@ boolean requestJsonApi(JsonDocument& doc, String url, String payload = "", size_
 		// Start connection and send HTTP header
 		int httpCode = 0;
 		if (type == "POST") {
+			Serial.printf("[HTTPS] POST payload length: %d\n", payload.length());
 			httpCode = https.POST(payload);
 		} else {
 			httpCode = https.GET();
@@ -87,12 +93,18 @@ boolean requestJsonApi(JsonDocument& doc, String url, String payload = "", size_
 				return false;
 			}
 		} else {
-			Serial.printf("[HTTPS] Request failed: %s\n", https.errorToString(httpCode).c_str());
+			Serial.printf("[HTTPS] Request failed: %s (code: %d)\n", https.errorToString(httpCode).c_str(), httpCode);
 			https.end();
+			client->stop();
+			delete client;
+			client = NULL;
 			return false;
 		}
     } else {
-    	DBG_PRINTLN(F("[HTTPS] Unable to connect"));
+    	Serial.printf("[HTTPS] Unable to connect to: %s\n", url.c_str());
+		client->stop();
+		delete client;
+		client = NULL;
 		return false;
     }
 }

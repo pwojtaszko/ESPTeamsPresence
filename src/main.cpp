@@ -19,11 +19,22 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <Adafruit_NeoPixel.h>
 // OLED display settings
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 32
 #define OLED_RESET    -1
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// LED Matrix settings
+#ifndef LED_MATRIX_PIN
+#define LED_MATRIX_PIN 5
+#endif
+#ifndef NUM_LEDS
+#define NUM_LEDS 25  // 5x5 matrix
+#endif
+// ESP32-C3 has limited RMT channels, use channel 0 explicitly
+Adafruit_NeoPixel ledMatrix(NUM_LEDS, LED_MATRIX_PIN, NEO_GRB + NEO_KHZ800);
 
 #include <EEPROM.h>
 #include "FS.h"
@@ -242,12 +253,14 @@ void startMDNS() {
 	DBG_PRINTLN("startMDNS()");
 	// Set up mDNS responder
     if (!MDNS.begin(thingName)) {
-        DBG_PRINTLN("Error setting up MDNS responder!");
-        while(1) {
-            delay(1000);
-        }
+        DBG_PRINTLN("Error setting up MDNS responder! Continuing without mDNS...");
+        return; // Continue without mDNS instead of getting stuck
     }
-	// MDNS.addService("http", "tcp", 80);
+	
+	// Try to add HTTP service, but don't fail if it doesn't work
+	if (!MDNS.addService("http", "tcp", 80)) {
+		DBG_PRINTLN("Failed adding HTTP service to mDNS, continuing...");
+	}
 
     DBG_PRINT("mDNS responder started: ");
     DBG_PRINT(thingName);
@@ -260,14 +273,110 @@ void startMDNS() {
 
 
 
+// LED Matrix Control Functions
+void setLedMatrixColor(uint32_t color) {
+	// Add delay between LED operations to prevent RMT conflicts on ESP32-C3
+	static unsigned long lastLedUpdate = 0;
+	if (millis() - lastLedUpdate < 100) { // Minimum 100ms between updates
+		return;
+	}
+	
+	for(int i = 0; i < NUM_LEDS; i++) {
+		ledMatrix.setPixelColor(i, color);
+	}
+	ledMatrix.show();
+	lastLedUpdate = millis();
+}
+
+void setLedMatrixOff() {
+	static unsigned long lastLedUpdate = 0;
+	if (millis() - lastLedUpdate < 100) { // Minimum 100ms between updates
+		return;
+	}
+	
+	ledMatrix.clear();
+	ledMatrix.show();
+	lastLedUpdate = millis();
+}
+
+void updateLedMatrixFromStatus() {
+	// Determine LED color based on Teams availability and activity
+	if (availability == "Available" || availability == "AvailableIdle") {
+		setLedMatrixColor(ledMatrix.Color(0, 255, 0));  // Green when people can interrupt
+	} else if (availability == "Busy" || availability == "InACall" || availability == "InAMeeting" || 
+			   activity == "InACall" || activity == "InAMeeting") {
+		setLedMatrixColor(ledMatrix.Color(255, 0, 0));  // Red when in meeting/busy
+	} else if (availability == "Away" || availability == "BeRightBack") {
+		setLedMatrixColor(ledMatrix.Color(255, 255, 0)); // Yellow for away status
+	} else if (availability == "DoNotDisturb") {
+		setLedMatrixColor(ledMatrix.Color(255, 0, 0));  // Red for do not disturb
+	} else if (availability == "Offline" || availability == "PresenceUnknown") {
+		setLedMatrixOff();                              // Off when offline or unknown
+	} else {
+		// Default case - dim white for unknown status
+		setLedMatrixColor(ledMatrix.Color(64, 64, 64));
+	}
+}
+
 // Update OLED display with Teams presence/activity
 void setPresenceDisplay() {
+	// Clear display properly
 	display.clearDisplay();
-	display.setTextSize(2);
+	display.setTextSize(1);
 	display.setTextColor(SSD1306_WHITE);
 	display.setCursor(0, 0);
-	display.print(activity.c_str());
+	
+	// Show current status based on connection state
+	if (availability.length() > 0 || activity.length() > 0) {
+		// Show Teams status when available
+		display.println("Teams Status:");
+		display.print("Avail: ");
+		display.println(availability.c_str());
+		display.print("Act: ");
+		display.println(activity.c_str());
+		DBG_PRINT("Display - Avail: ");
+		DBG_PRINT(availability);
+		DBG_PRINT(", Act: ");
+		DBG_PRINTLN(activity);
+	} else {
+		// Show connection status when no Teams data
+		display.println("ESPTeamsPresence");
+		display.println();
+		switch(state) {
+			case SMODEINITIAL:
+				display.println("Starting...");
+				break;
+			case SMODEWIFICONNECTING:
+				display.println("WiFi connecting...");
+				break;
+			case SMODEWIFICONNECTED:
+				display.println("WiFi: Connected");
+				display.println("Config needed");
+				break;
+			case SMODEDEVICELOGINSTARTED:
+				display.println("Login started");
+				break;
+			case SMODEAUTHREADY:
+			case SMODEPOLLPRESENCE:
+				display.println("Teams: Connected");
+				display.println("Getting status...");
+				break;
+			default:
+				display.print("State: ");
+				display.println(state);
+				break;
+		}
+	}
+	
+	// Ensure display is updated
 	display.display();
+
+	// Also update LED matrix - but with rate limiting
+	static unsigned long lastStatusUpdate = 0;
+	if (millis() - lastStatusUpdate > 1000) { // Update LEDs max once per second
+		updateLedMatrixFromStatus();
+		lastStatusUpdate = millis();
+	}
 }
 
 
@@ -495,25 +604,39 @@ void statemachine() {
  */
 void setup()
 {
-	// OLED display init
+	// OLED display init (using default I2C pins: SDA=8, SCL=9 on ESP32-C3)
 	if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C for 128x32
 		Serial.println(F("SSD1306 allocation failed"));
 		for(;;);
 	}
-		display.clearDisplay();
-		display.setTextSize(1);
-		display.setTextColor(SSD1306_WHITE);
-		display.setCursor(0,0);
-		display.println("ESPTeamsPresence");
-		display.setCursor(0,12);
-		display.println("WiFi Setup:");
-		display.setCursor(0,22);
-		display.print("Connect to: ");
-		display.println(thingName);
-		display.setCursor(0,32);
-		display.print("Pass: ");
-		display.println(wifiInitialApPassword);
-		display.display();
+	
+	// Initial display setup
+	display.clearDisplay();
+	display.setTextSize(1);
+	display.setTextColor(SSD1306_WHITE);
+	display.setCursor(0,0);
+	display.println("ESPTeamsPresence");
+	display.setCursor(0,12);
+	display.println("WiFi Setup:");
+	display.setCursor(0,22);
+	display.print("Connect to: ");
+	display.println(thingName);
+	display.display();
+	// LED Matrix init - with error handling for ESP32-C3
+	DBG_PRINTLN(F("Initializing LED matrix..."));
+	ledMatrix.begin();
+	ledMatrix.setBrightness(10);  // Set low brightness (0-255) - much dimmer
+	
+	// Test LED matrix with a brief flash to verify it's working
+	for(int i = 0; i < NUM_LEDS; i++) {
+		ledMatrix.setPixelColor(i, ledMatrix.Color(0, 0, 32)); // Dim blue
+	}
+	ledMatrix.show();
+	delay(500);
+	
+	setLedMatrixOff();  // Start with LEDs off
+	DBG_PRINTLN(F("LED matrix initialized"));
+	
 	Serial.begin(115200);
 	DBG_PRINTLN();
 	DBG_PRINTLN(F("setup() Starting up..."));
@@ -574,4 +697,20 @@ void loop()
 	iotWebConf.doLoop();
 
 	statemachine();
+	
+	// Update display periodically to prevent glitches and show current status
+	static unsigned long lastDisplayUpdate = 0;
+	static bool initialDisplayCleared = false;
+	
+	// Clear initial setup display after 3 seconds, then update every 5 seconds
+	if (!initialDisplayCleared && millis() > 3000) {
+		DBG_PRINTLN("Updating display with current status");
+		setPresenceDisplay();
+		initialDisplayCleared = true;
+		lastDisplayUpdate = millis();
+	} else if (initialDisplayCleared && millis() - lastDisplayUpdate > 5000) {
+		// Periodic refresh to prevent display glitches
+		setPresenceDisplay();
+		lastDisplayUpdate = millis();
+	}
 }

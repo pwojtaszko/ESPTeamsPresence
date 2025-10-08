@@ -155,6 +155,17 @@ uint8_t retries = 0;
 // Multicore
 TaskHandle_t TaskNeopixel; 
 
+// Smooth LED transition variables
+struct RGBColor {
+	uint8_t r, g, b;
+};
+
+RGBColor currentColor = {0, 0, 0};    // Current LED color
+RGBColor targetColor = {0, 0, 0};     // Target LED color
+bool transitionActive = false;        // Whether a transition is active
+unsigned long transitionStartTime = 0; // When the transition started
+#define TRANSITION_DURATION 1000      // Transition duration in milliseconds
+
 
 /**
  * Helper
@@ -261,6 +272,78 @@ void startMDNS() {
 #include "request_handler.h"
 #include "spiffs_webserver.h"
 
+// Color interpolation function
+RGBColor interpolateColor(RGBColor from, RGBColor to, float progress) {
+	// Ensure progress is between 0.0 and 1.0
+	if (progress < 0.0) progress = 0.0;
+	if (progress > 1.0) progress = 1.0;
+	
+	RGBColor result;
+	result.r = from.r + (to.r - from.r) * progress;
+	result.g = from.g + (to.g - from.g) * progress;
+	result.b = from.b + (to.b - from.b) * progress;
+	
+	return result;
+}
+
+// Convert RGB values to NeoPixel color
+uint32_t rgbToColor(RGBColor rgb) {
+	return ledMatrix.Color(rgb.r, rgb.g, rgb.b);
+}
+
+// Extract RGB components from a 32-bit color
+RGBColor colorToRGB(uint32_t color) {
+	RGBColor rgb;
+	rgb.r = (color >> 16) & 0xFF;
+	rgb.g = (color >> 8) & 0xFF;
+	rgb.b = color & 0xFF;
+	return rgb;
+}
+
+// Update LED transition
+void updateLedTransition() {
+	if (!transitionActive) return;
+	
+	unsigned long elapsed = millis() - transitionStartTime;
+	float progress = (float)elapsed / TRANSITION_DURATION;
+	
+	if (progress >= 1.0) {
+		// Transition complete
+		currentColor = targetColor;
+		transitionActive = false;
+		progress = 1.0;
+	}
+	
+	RGBColor interpolatedColor = interpolateColor(currentColor, targetColor, progress);
+	uint32_t color = rgbToColor(interpolatedColor);
+	
+	// Update all LEDs immediately during transition
+	for(int i = 0; i < NUM_LEDS; i++) {
+		ledMatrix.setPixelColor(i, color);
+	}
+	ledMatrix.show();
+	
+	// Update current color if transition is complete
+	if (!transitionActive) {
+		currentColor = targetColor;
+	}
+}
+
+// Start a smooth transition to a new color
+void startColorTransition(uint32_t newColor) {
+	RGBColor newRGB = colorToRGB(newColor);
+	
+	// If already at target color, no transition needed
+	if (currentColor.r == newRGB.r && currentColor.g == newRGB.g && currentColor.b == newRGB.b) {
+		return;
+	}
+	
+	// Start transition
+	targetColor = newRGB;
+	transitionActive = true;
+	transitionStartTime = millis();
+}
+
 
 
 // LED Matrix Control Functions
@@ -291,21 +374,26 @@ void setLedMatrixOff() {
 
 void updateLedMatrixFromStatus() {
 	// Determine LED color based on Teams availability and activity
+	uint32_t newColor;
+	
 	if (availability == "Available" || availability == "AvailableIdle") {
-		setLedMatrixColor(ledMatrix.Color(0, 255, 0));  // Green when people can interrupt
+		newColor = ledMatrix.Color(0, 255, 0);  // Green when people can interrupt
 	} else if (availability == "Busy" || availability == "InACall" || availability == "InAMeeting" || 
 			   activity == "InACall" || activity == "InAMeeting") {
-		setLedMatrixColor(ledMatrix.Color(255, 0, 0));  // Red when in meeting/busy
+		newColor = ledMatrix.Color(255, 0, 0);  // Red when in meeting/busy
 	} else if (availability == "Away" || availability == "BeRightBack") {
-		setLedMatrixColor(ledMatrix.Color(255, 255, 0)); // Yellow for away status
+		newColor = ledMatrix.Color(255, 255, 0); // Yellow for away status
 	} else if (availability == "DoNotDisturb") {
-		setLedMatrixColor(ledMatrix.Color(255, 0, 0));  // Red for do not disturb
+		newColor = ledMatrix.Color(255, 0, 0);  // Red for do not disturb
 	} else if (availability == "Offline" || availability == "PresenceUnknown") {
-		setLedMatrixOff();                              // Off when offline or unknown
+		newColor = ledMatrix.Color(0, 0, 0);    // Off when offline or unknown
 	} else {
 		// Default case - dim white for unknown status
-		setLedMatrixColor(ledMatrix.Color(64, 64, 64));
+		newColor = ledMatrix.Color(64, 64, 64);
 	}
+	
+	// Start smooth transition to new color
+	startColorTransition(newColor);
 }
 
 // Update LED status based on Teams presence
@@ -618,6 +706,9 @@ void loop()
 	iotWebConf.doLoop();
 
 	statemachine();
+	
+	// Update LED transitions continuously for smooth color changes
+	updateLedTransition();
 	
 	// Update LED status periodically
 	static unsigned long lastLedUpdate = 0;

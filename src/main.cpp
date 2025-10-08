@@ -16,15 +16,7 @@
 #include <HTTPClient.h>
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include <Adafruit_NeoPixel.h>
-// OLED display settings
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 32
-#define OLED_RESET    -1
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 // LED Matrix settings
 #ifndef LED_MATRIX_PIN
@@ -128,8 +120,6 @@ byte lastIotWebConfState;
 
 // HTTP client
 WiFiClientSecure client;
-
-// OLED display will be initialized later
 
 // OTA update
 HTTPUpdateServer httpUpdater;
@@ -318,60 +308,9 @@ void updateLedMatrixFromStatus() {
 	}
 }
 
-// Update OLED display with Teams presence/activity
-void setPresenceDisplay() {
-	// Clear display properly
-	display.clearDisplay();
-	display.setTextSize(1);
-	display.setTextColor(SSD1306_WHITE);
-	display.setCursor(0, 0);
-	
-	// Show current status based on connection state
-	if (availability.length() > 0 || activity.length() > 0) {
-		// Show Teams status when available
-		display.println("Teams Status:");
-		display.print("Avail: ");
-		display.println(availability.c_str());
-		display.print("Act: ");
-		display.println(activity.c_str());
-		DBG_PRINT("Display - Avail: ");
-		DBG_PRINT(availability);
-		DBG_PRINT(", Act: ");
-		DBG_PRINTLN(activity);
-	} else {
-		// Show connection status when no Teams data
-		display.println("ESPTeamsPresence");
-		display.println();
-		switch(state) {
-			case SMODEINITIAL:
-				display.println("Starting...");
-				break;
-			case SMODEWIFICONNECTING:
-				display.println("WiFi connecting...");
-				break;
-			case SMODEWIFICONNECTED:
-				display.println("WiFi: Connected");
-				display.println("Config needed");
-				break;
-			case SMODEDEVICELOGINSTARTED:
-				display.println("Login started");
-				break;
-			case SMODEAUTHREADY:
-			case SMODEPOLLPRESENCE:
-				display.println("Teams: Connected");
-				display.println("Getting status...");
-				break;
-			default:
-				display.print("State: ");
-				display.println(state);
-				break;
-		}
-	}
-	
-	// Ensure display is updated
-	display.display();
-
-	// Also update LED matrix - but with rate limiting
+// Update LED status based on Teams presence
+void updatePresenceStatus() {
+	// Update LED matrix - but with rate limiting
 	static unsigned long lastStatusUpdate = 0;
 	if (millis() - lastStatusUpdate > 1000) { // Update LEDs max once per second
 		updateLedMatrixFromStatus();
@@ -455,7 +394,7 @@ void pollPresence() {
 		activity = responseDoc["activity"].as<String>();
 		retries = 0;
 
-		setPresenceDisplay();
+		updatePresenceStatus();
 	}
 }
 
@@ -604,24 +543,6 @@ void statemachine() {
  */
 void setup()
 {
-	// OLED display init (using default I2C pins: SDA=8, SCL=9 on ESP32-C3)
-	if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C for 128x32
-		Serial.println(F("SSD1306 allocation failed"));
-		for(;;);
-	}
-	
-	// Initial display setup
-	display.clearDisplay();
-	display.setTextSize(1);
-	display.setTextColor(SSD1306_WHITE);
-	display.setCursor(0,0);
-	display.println("ESPTeamsPresence");
-	display.setCursor(0,12);
-	display.println("WiFi Setup:");
-	display.setCursor(0,22);
-	display.print("Connect to: ");
-	display.println(thingName);
-	display.display();
 	// LED Matrix init - with error handling for ESP32-C3
 	DBG_PRINTLN(F("Initializing LED matrix..."));
 	ledMatrix.begin();
@@ -698,19 +619,10 @@ void loop()
 
 	statemachine();
 	
-	// Update display periodically to prevent glitches and show current status
-	static unsigned long lastDisplayUpdate = 0;
-	static bool initialDisplayCleared = false;
-	
-	// Clear initial setup display after 3 seconds, then update every 5 seconds
-	if (!initialDisplayCleared && millis() > 3000) {
-		DBG_PRINTLN("Updating display with current status");
-		setPresenceDisplay();
-		initialDisplayCleared = true;
-		lastDisplayUpdate = millis();
-	} else if (initialDisplayCleared && millis() - lastDisplayUpdate > 5000) {
-		// Periodic refresh to prevent display glitches
-		setPresenceDisplay();
-		lastDisplayUpdate = millis();
+	// Update LED status periodically
+	static unsigned long lastLedUpdate = 0;
+	if (millis() - lastLedUpdate > 1000) { // Update every second
+		updatePresenceStatus();
+		lastLedUpdate = millis();
 	}
 }
